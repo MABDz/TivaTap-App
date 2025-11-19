@@ -344,16 +344,55 @@ class ReactionGameApp:
         self.master.after(50, self.process_rx_queue)
 
     def handle_serial_line(self, line: str):
-        """Interpret line from MCU, mainly 3-digit delays."""
+        """Interpret line from MCU, mainly 3-digit delays or error codes E0/E1."""
         if hasattr(self, "log"):
             self.log.insert(tk.END, f"RX: {repr(line)}\n")
             self.log.see(tk.END)
 
-        # Try parse as integer
+        line_stripped = line.strip()
+
+        # Check for error codes first
+        if line_stripped == "E0":
+            # Error: Button pressed too early
+            if hasattr(self, "status_label"):
+                self.status_label.config(text="ERROR: Button pressed too early!")
+            if hasattr(self, "last_result_label"):
+                self.last_result_label.config(text="GAME OVER - Too Early!")
+            
+            self.waiting_for_result = False
+            self.start_round_button.config(state=tk.DISABLED)
+            
+            messagebox.showerror(
+                "Game Over - E0",
+                f"{self.player_name}, you pressed the button too early!\n\n"
+                f"Round: {self.current_round + 1} / {self.selected_rounds}\n"
+                f"Game ended."
+            )
+            return
+        
+        elif line_stripped == "E1":
+            # Error: Wrong color combination
+            if hasattr(self, "status_label"):
+                self.status_label.config(text="ERROR: Wrong color combination!")
+            if hasattr(self, "last_result_label"):
+                self.last_result_label.config(text="GAME OVER - Wrong Colors!")
+            
+            self.waiting_for_result = False
+            self.start_round_button.config(state=tk.DISABLED)
+            
+            messagebox.showerror(
+                "Game Over - E1",
+                f"{self.player_name}, you pressed the wrong color combination!\n\n"
+                f"Round: {self.current_round + 1} / {self.selected_rounds}\n"
+                f"Game ended."
+            )
+            return
+
+        # Try parse as integer (delay time)
         try:
-            delay_ms = int(line.strip())
+            delay_ms = int(line_stripped)
         except ValueError:
-            # Non-numeric data: treat as info only
+            # Non-numeric data and not an error code: treat as info only
             if hasattr(self, "status_label"):
                 self.status_label.config(text="Status: Received non-numeric data")
             return
