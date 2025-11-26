@@ -27,10 +27,15 @@ class ReactionGameApp:
         master.state('zoomed')  # Start fullscreen on Windows
 
         # ---- Game state ----
+        self.game_mode = None  # 'single' or 'multiplayer'
         self.player_name = ""
+        self.player_a_name = ""
+        self.player_b_name = ""
         self.selected_rounds = 5  # default
         self.current_round = 0
-        self.round_times = []
+        self.round_times = []  # For single player
+        self.player_a_times = []  # For multiplayer
+        self.player_b_times = []
         self.waiting_for_result = False
 
         # Leaderboard: rounds -> list of (name, avg_ms)
@@ -40,9 +45,11 @@ class ReactionGameApp:
         self.rx_queue = queue.Queue()
 
         # ---- UI: main frames ----
+        self.mode_frame = tk.Frame(master)
         self.start_frame = tk.Frame(master)
         self.game_frame = tk.Frame(master)
 
+        self.create_mode_selection_screen()
         self.create_start_screen()
         self.create_game_screen()
         self.create_leaderboard_frame()
@@ -50,7 +57,7 @@ class ReactionGameApp:
         # Load leaderboard after UI is created
         self.load_leaderboard()
 
-        self.show_start_screen()
+        self.show_mode_selection_screen()
 
         # ---- Serial setup ----
         self.ser = None
@@ -67,6 +74,32 @@ class ReactionGameApp:
 
         # Clean up on close
         self.master.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _create_rounded_rectangle(self, canvas, x1, y1, x2, y2, radius=25, **kwargs):
+        """Draw a rounded rectangle on a canvas."""
+        points = [
+            x1 + radius, y1,
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return canvas.create_polygon(points, smooth=True, **kwargs)
 
     # ==============================
     # Leaderboard Persistence
@@ -97,6 +130,24 @@ class ReactionGameApp:
                 json.dump(data, f, indent=2)
         except IOError as e:
             print(f"Could not save leaderboard: {e}")
+
+    def update_leaderboard_entry(self, rounds, name, avg_time):
+        """Update leaderboard entry, replacing existing entry if name exists, otherwise adding new."""
+        # Check if name already exists in this round's leaderboard
+        existing_index = None
+        for i, (entry_name, entry_time) in enumerate(self.leaderboard[rounds]):
+            if entry_name == name:
+                existing_index = i
+                break
+        
+        if existing_index is not None:
+            # Update existing entry only if new time is better (lower)
+            old_time = self.leaderboard[rounds][existing_index][1]
+            if avg_time < old_time:
+                self.leaderboard[rounds][existing_index] = (name, avg_time)
+        else:
+            # Add new entry
+            self.leaderboard[rounds].append((name, avg_time))
 
     # ==============================
     # Serial Connection
@@ -153,13 +204,75 @@ class ReactionGameApp:
     # UI construction
     # ==============================
 
+    def create_mode_selection_screen(self):
+        """Mode selection screen: choose single player or multiplayer."""
+        self.mode_frame.configure(bg='#F5EDE0')
+        
+        # Configure grid to center content
+        self.mode_frame.grid_rowconfigure(0, weight=2)
+        self.mode_frame.grid_rowconfigure(5, weight=2)
+        self.mode_frame.grid_columnconfigure(0, weight=1)
+
+        # Title
+        title_label = tk.Label(
+            self.mode_frame,
+            text="TivaTap",
+            font=("Arial", 32, "bold"),
+            bg='#F5EDE0',
+            fg='#4D413D'
+        )
+        title_label.grid(row=1, column=0, pady=(10, 5))
+
+        subtitle_label = tk.Label(
+            self.mode_frame,
+            text="Select Game Mode",
+            font=("Arial", 14),
+            bg='#F5EDE0',
+            fg='#D93750'
+        )
+        subtitle_label.grid(row=2, column=0, pady=(0, 40))
+
+        # Single Player button
+        single_button = tk.Button(
+            self.mode_frame,
+            text="SINGLE PLAYER",
+            width=25,
+            font=("Arial", 14, "bold"),
+            command=lambda: self.select_mode('single'),
+            bg='#2CA7A7',
+            fg='#FFFFFF',
+            activebackground='#3CBEBE',
+            activeforeground='#FFFFFF',
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2"
+        )
+        single_button.grid(row=3, column=0, pady=15)
+
+        # Multiplayer button
+        multi_button = tk.Button(
+            self.mode_frame,
+            text="MULTIPLAYER",
+            width=25,
+            font=("Arial", 14, "bold"),
+            command=lambda: self.select_mode('multiplayer'),
+            bg='#D93750',
+            fg='#FFFFFF',
+            activebackground='#F87060',
+            activeforeground='#FFFFFF',
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2"
+        )
+        multi_button.grid(row=4, column=0, pady=15)
+
     def create_start_screen(self):
         """Start screen: name, rounds selection, start button."""
         self.start_frame.configure(bg='#F5EDE0')
         
         # Configure grid to center content
         self.start_frame.grid_rowconfigure(0, weight=2)
-        self.start_frame.grid_rowconfigure(7, weight=2)
+        self.start_frame.grid_rowconfigure(8, weight=2)
         self.start_frame.grid_columnconfigure(0, weight=1)
         self.start_frame.grid_columnconfigure(1, weight=1)
 
@@ -182,15 +295,15 @@ class ReactionGameApp:
         )
         subtitle_label.grid(row=2, column=0, columnspan=2, pady=(0, 20))
 
-        # Player name
-        name_label = tk.Label(
+        # Player name (single player)
+        self.name_label = tk.Label(
             self.start_frame,
             text="Player Name:",
             font=("Arial", 12),
             bg='#F5EDE0',
             fg='#4D413D'
         )
-        name_label.grid(row=3, column=0, padx=5, pady=8)
+        self.name_label.grid(row=3, column=0, padx=5, pady=8)
 
         self.name_entry = tk.Entry(
             self.start_frame,
@@ -204,6 +317,46 @@ class ReactionGameApp:
         )
         self.name_entry.grid(row=3, column=1, padx=5, pady=8)
 
+        # Player A name (multiplayer)
+        self.player_a_label = tk.Label(
+            self.start_frame,
+            text="Player A Name:",
+            font=("Arial", 12),
+            bg='#F5EDE0',
+            fg='#4D413D'
+        )
+
+        self.player_a_entry = tk.Entry(
+            self.start_frame,
+            width=20,
+            font=("Arial", 12),
+            bg='#FFFFFF',
+            fg='#4D413D',
+            insertbackground='#D93750',
+            relief=tk.FLAT,
+            bd=2
+        )
+
+        # Player B name (multiplayer)
+        self.player_b_label = tk.Label(
+            self.start_frame,
+            text="Player B Name:",
+            font=("Arial", 12),
+            bg='#F5EDE0',
+            fg='#4D413D'
+        )
+
+        self.player_b_entry = tk.Entry(
+            self.start_frame,
+            width=20,
+            font=("Arial", 12),
+            bg='#FFFFFF',
+            fg='#4D413D',
+            insertbackground='#D93750',
+            relief=tk.FLAT,
+            bd=2
+        )
+
         # Round selection
         rounds_label = tk.Label(
             self.start_frame,
@@ -212,12 +365,12 @@ class ReactionGameApp:
             bg='#F5EDE0',
             fg='#4D413D'
         )
-        rounds_label.grid(row=4, column=0, padx=5, pady=8)
+        rounds_label.grid(row=5, column=0, padx=5, pady=8)
 
         self.rounds_var = tk.IntVar(value=5)
 
         rounds_frame = tk.Frame(self.start_frame, bg='#F5EDE0')
-        rounds_frame.grid(row=4, column=1, padx=5, pady=8)
+        rounds_frame.grid(row=5, column=1, padx=5, pady=8)
 
         rb1 = tk.Radiobutton(
             rounds_frame, text="1", variable=self.rounds_var, value=1,
@@ -254,7 +407,7 @@ class ReactionGameApp:
             bd=0,
             cursor="hand2"
         )
-        start_button.grid(row=5, column=0, columnspan=2, padx=5, pady=20)
+        start_button.grid(row=6, column=0, columnspan=2, padx=5, pady=20)
 
         # Info label
         self.start_info_label = tk.Label(
@@ -264,7 +417,7 @@ class ReactionGameApp:
             fg="#F87060",
             bg='#F5EDE0'
         )
-        self.start_info_label.grid(row=6, column=0, columnspan=2)
+        self.start_info_label.grid(row=7, column=0, columnspan=2)
 
     def create_game_screen(self):
         """Game screen: start round button, status, etc."""
@@ -310,6 +463,7 @@ class ReactionGameApp:
         result_frame = tk.Frame(self.game_frame, bg='#F5EDE0')
         result_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=20, pady=20)
 
+        # Single player result label
         self.last_result_label = tk.Label(
             result_frame,
             text="Ready to Start",
@@ -319,19 +473,70 @@ class ReactionGameApp:
         )
         self.last_result_label.pack(expand=True)
 
-        # Status
+        # Multiplayer split display frame
+        self.multiplayer_result_frame = tk.Frame(result_frame, bg='#F5EDE0')
+        
+        # Player A side with rounded canvas
+        player_a_container = tk.Frame(self.multiplayer_result_frame, bg='#F5EDE0')
+        player_a_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.player_a_canvas = tk.Canvas(player_a_container, width=300, height=180, bg='#F5EDE0', highlightthickness=0)
+        self.player_a_canvas.pack(expand=True)
+        
+        # Draw rounded rectangle for Player A
+        self._create_rounded_rectangle(self.player_a_canvas, 5, 5, 295, 175, radius=25, fill='#E8F4F8', outline='#2CA7A7', width=4)
+        
+        self.player_a_title = self.player_a_canvas.create_text(
+            150, 50,
+            text="Player A",
+            font=("Arial", 18, "bold"),
+            fill='#2CA7A7'
+        )
+        
+        self.player_a_time_text = self.player_a_canvas.create_text(
+            150, 110,
+            text="Ready",
+            font=("Arial", 28, "bold"),
+            fill='#4D413D'
+        )
+        
+        # Player B side with rounded canvas
+        player_b_container = tk.Frame(self.multiplayer_result_frame, bg='#F5EDE0')
+        player_b_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.player_b_canvas = tk.Canvas(player_b_container, width=300, height=180, bg='#F5EDE0', highlightthickness=0)
+        self.player_b_canvas.pack(expand=True)
+        
+        # Draw rounded rectangle for Player B
+        self._create_rounded_rectangle(self.player_b_canvas, 5, 5, 295, 175, radius=25, fill='#FCE8E8', outline='#D93750', width=4)
+        
+        self.player_b_title = self.player_b_canvas.create_text(
+            150, 50,
+            text="Player B",
+            font=("Arial", 18, "bold"),
+            fill='#D93750'
+        )
+        
+        self.player_b_time_text = self.player_b_canvas.create_text(
+            150, 110,
+            text="Ready",
+            font=("Arial", 28, "bold"),
+            fill='#4D413D'
+        )
+
+        # Button frame (status label will be here for both modes)
+        button_frame = tk.Frame(self.game_frame, bg='#F5EDE0')
+        button_frame.pack(side=tk.TOP, fill=tk.X, padx=20, pady=10)
+
+        # Status label - moved to button frame to be above the button for both modes
         self.status_label = tk.Label(
-            result_frame,
+            button_frame,
             text="Press START ROUND to begin",
-            font=("Arial", 12),
+            font=("Arial", 14, "bold"),
             bg='#F5EDE0',
             fg='#4D413D'
         )
-        self.status_label.pack()
-
-        # Button frame
-        button_frame = tk.Frame(self.game_frame, bg='#F5EDE0')
-        button_frame.pack(side=tk.TOP, fill=tk.X, padx=20, pady=10)
+        self.status_label.pack(pady=(0, 10))
 
         # Start round button
         self.start_round_button = tk.Button(
@@ -351,7 +556,7 @@ class ReactionGameApp:
         self.start_round_button.pack(pady=5)
 
     def show_final_results(self):
-        """Display final average results after last round."""
+        """Display final average results after last round (single player)."""
         avg = sum(self.round_times) / len(self.round_times)
         self.status_label.config(
             text=f"🎉 Congratulations {self.player_name}! 🎉\nYou completed {self.selected_rounds} rounds!",
@@ -365,9 +570,133 @@ class ReactionGameApp:
         )
 
         # Update leaderboard
-        self.leaderboard[self.selected_rounds].append((self.player_name, avg))
+        self.update_leaderboard_entry(self.selected_rounds, self.player_name, avg)
         self.update_leaderboard_ui()
         self.save_leaderboard()
+
+    def show_final_multiplayer_results(self):
+        """Display final results for multiplayer game."""
+        avg_a = sum(self.player_a_times) / len(self.player_a_times)
+        avg_b = sum(self.player_b_times) / len(self.player_b_times)
+        time_diff = abs(avg_a - avg_b)
+        
+        if avg_a < avg_b:
+            winner = self.player_a_name
+            winner_avg = avg_a
+            winner_text = f"🎉 {self.player_a_name} WINS! 🎉"
+            subheading = f"{self.player_a_name} was {time_diff:.1f}ms faster than {self.player_b_name}"
+        elif avg_b < avg_a:
+            winner = self.player_b_name
+            winner_avg = avg_b
+            winner_text = f"🎉 {self.player_b_name} WINS! 🎉"
+            subheading = f"{self.player_b_name} was {time_diff:.1f}ms faster than {self.player_a_name}"
+        else:
+            winner = f"{self.player_a_name} & {self.player_b_name}"
+            winner_avg = avg_a
+            winner_text = f"🎉 IT'S A TIE! 🎉"
+            subheading = f"Both players averaged exactly {avg_a:.1f}ms!"
+        
+        # Large winner announcement in gold
+        self.status_label.config(
+            text=winner_text,
+            font=("Arial", 32, "bold"),
+            fg='#E4A853'
+        )
+        
+        # Update multiplayer display with smaller final averages
+        self.player_a_canvas.itemconfig(
+            self.player_a_time_text,
+            text=f"{avg_a:.1f}ms",
+            font=("Arial", 14),
+            fill='#2CA7A7' if avg_a <= avg_b else '#D93750'
+        )
+        self.player_b_canvas.itemconfig(
+            self.player_b_time_text,
+            text=f"{avg_b:.1f}ms",
+            font=("Arial", 14),
+            fill='#2CA7A7' if avg_b <= avg_a else '#D93750'
+        )
+        
+        # Show subheading after a brief delay
+        self.master.after(500, lambda: self.status_label.config(
+            text=f"{winner_text}\n{subheading}",
+            font=("Arial", 24, "bold")
+        ))
+        
+        self.start_round_button.config(
+            text="RETURN TO MAIN MENU",
+            state=tk.NORMAL,
+            command=self.on_back_to_start_clicked
+        )
+
+        # Add winner to leaderboard
+        self.update_leaderboard_entry(self.selected_rounds, winner, winner_avg)
+        self.update_leaderboard_ui()
+        self.save_leaderboard()
+
+    def show_multiplayer_error_results(self, winner_player, error_message):
+        """Display results when a player makes an error in multiplayer."""
+        # Determine winner and their name
+        if winner_player == 'A':
+            winner = self.player_a_name
+        else:
+            winner = self.player_b_name
+        
+        winner_text = f"🎉 {winner} WINS! 🎉"
+        
+        # Calculate averages if any rounds were played
+        if len(self.player_a_times) > 0 and len(self.player_b_times) > 0:
+            avg_a = sum(self.player_a_times) / len(self.player_a_times)
+            avg_b = sum(self.player_b_times) / len(self.player_b_times)
+            
+            # Update multiplayer display with averages
+            self.player_a_canvas.itemconfig(
+                self.player_a_time_text,
+                text=f"{avg_a:.1f}ms",
+                font=("Arial", 20),
+                fill='#2CA7A7' if winner_player == 'A' else '#4D413D'
+            )
+            self.player_b_canvas.itemconfig(
+                self.player_b_time_text,
+                text=f"{avg_b:.1f}ms",
+                font=("Arial", 20),
+                fill='#2CA7A7' if winner_player == 'B' else '#4D413D'
+            )
+        else:
+            # No rounds played, just show ERROR
+            self.player_a_canvas.itemconfig(
+                self.player_a_time_text,
+                text="WINS!" if winner_player == 'A' else "ERROR",
+                font=("Arial", 20),
+                fill='#2CA7A7' if winner_player == 'A' else '#D93750'
+            )
+            self.player_b_canvas.itemconfig(
+                self.player_b_time_text,
+                text="WINS!" if winner_player == 'B' else "ERROR",
+                font=("Arial", 20),
+                fill='#2CA7A7' if winner_player == 'B' else '#D93750'
+            )
+        
+        # Large winner announcement in gold
+        self.status_label.config(
+            text=winner_text,
+            font=("Arial", 32, "bold"),
+            fg='#E4A853'
+        )
+        
+        # Show error message after a brief delay
+        self.master.after(500, lambda: self.status_label.config(
+            text=f"{winner_text}\n{error_message}",
+            font=("Arial", 24, "bold")
+        ))
+        
+        self.start_round_button.config(
+            text="RETURN TO MAIN MENU",
+            state=tk.NORMAL,
+            command=self.on_back_to_start_clicked
+        )
+        
+        # Don't update leaderboard for games that end in error
 
     def send_round_command(self):
         """Send the round command to microcontroller after delay."""
@@ -375,7 +704,10 @@ class ReactionGameApp:
         color = random.choice("RGBCMYW")
         number = random.randint(2, 6)
 
-        cmd = f"S{color}{number}\n"
+        if self.game_mode == 'single':
+            cmd = f"S{color}{number}\n"
+        else:  # multiplayer
+            cmd = f"M{color}{number}\n"
 
         try:
             self.ser.write(cmd.encode("ascii"))
@@ -482,25 +814,72 @@ class ReactionGameApp:
     # Screen switching
     # ==============================
 
+    def show_mode_selection_screen(self):
+        self.start_frame.pack_forget()
+        self.game_frame.pack_forget()
+        self.mode_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
     def show_start_screen(self):
+        self.mode_frame.pack_forget()
         self.game_frame.pack_forget()
         self.start_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
     def show_game_screen(self):
+        self.mode_frame.pack_forget()
         self.start_frame.pack_forget()
         self.game_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    # ==============================
+    # Mode selection callbacks
+    # ==============================
+
+    def select_mode(self, mode):
+        """Handle mode selection."""
+        self.game_mode = mode
+        
+        # Configure start screen based on mode
+        if mode == 'single':
+            # Show single player fields
+            self.name_label.grid(row=3, column=0, padx=5, pady=8)
+            self.name_entry.grid(row=3, column=1, padx=5, pady=8)
+            # Hide multiplayer fields
+            self.player_a_label.grid_remove()
+            self.player_a_entry.grid_remove()
+            self.player_b_label.grid_remove()
+            self.player_b_entry.grid_remove()
+        else:  # multiplayer
+            # Hide single player field
+            self.name_label.grid_remove()
+            self.name_entry.grid_remove()
+            # Show multiplayer fields
+            self.player_a_label.grid(row=3, column=0, padx=5, pady=8)
+            self.player_a_entry.grid(row=3, column=1, padx=5, pady=8)
+            self.player_b_label.grid(row=4, column=0, padx=5, pady=8)
+            self.player_b_entry.grid(row=4, column=1, padx=5, pady=8)
+        
+        self.show_start_screen()
 
     # ==============================
     # Start screen callbacks
     # ==============================
 
     def on_start_game_clicked(self):
-        name = self.name_entry.get().strip()
         rounds = self.rounds_var.get()
 
-        if not name:
-            self.start_info_label.config(text="Please enter a name.", fg="#F87060")
-            return
+        if self.game_mode == 'single':
+            name = self.name_entry.get().strip()
+            if not name:
+                self.start_info_label.config(text="Please enter a name.", fg="#F87060")
+                return
+            self.player_name = name
+        else:  # multiplayer
+            player_a = self.player_a_entry.get().strip()
+            player_b = self.player_b_entry.get().strip()
+            if not player_a or not player_b:
+                self.start_info_label.config(text="Please enter both player names.", fg="#F87060")
+                return
+            self.player_a_name = player_a
+            self.player_b_name = player_b
 
         if rounds not in (1, 5, 10):
             self.start_info_label.config(text="Please select number of rounds.", fg="#F87060")
@@ -526,14 +905,29 @@ class ReactionGameApp:
         self.start_info_label.config(text="")
 
         # Set up new game state
-        self.player_name = name
         self.selected_rounds = rounds
         self.current_round = 0
         self.round_times = []
+        self.player_a_times = []
+        self.player_b_times = []
         self.waiting_for_result = False
 
         # Update game screen labels
-        self.player_label.config(text=f"Player: {self.player_name}")
+        if self.game_mode == 'single':
+            self.player_label.config(text=f"Player: {self.player_name}")
+            # Show single player UI, hide multiplayer UI
+            self.last_result_label.pack(expand=True)
+            self.multiplayer_result_frame.pack_forget()
+        else:
+            self.player_label.config(text=f"Player A: {self.player_a_name} vs Player B: {self.player_b_name}")
+            # Show multiplayer UI, hide single player UI
+            self.last_result_label.pack_forget()
+            self.multiplayer_result_frame.pack(fill=tk.BOTH, expand=True)
+            self.player_a_canvas.itemconfig(self.player_a_title, text=f"{self.player_a_name}")
+            self.player_b_canvas.itemconfig(self.player_b_title, text=f"{self.player_b_name}")
+            self.player_a_canvas.itemconfig(self.player_a_time_text, text="Ready", fill='#4D413D')
+            self.player_b_canvas.itemconfig(self.player_b_time_text, text="Ready", fill='#4D413D')
+        
         self.progress_label.config(text=f"Round {self.current_round} / {self.selected_rounds}")
         self.status_label.config(text="Press START ROUND to begin", fg='#4D413D')
         self.last_result_label.config(text="Ready to Start", fg='#2CA7A7')
@@ -553,7 +947,7 @@ class ReactionGameApp:
             ):
                 return
         self.waiting_for_result = False
-        self.show_start_screen()
+        self.show_mode_selection_screen()
 
     # ==============================
     # Game screen: start round
@@ -638,6 +1032,13 @@ class ReactionGameApp:
         """Interpret line from MCU, mainly 3-digit delays or error codes E0/E1."""
         line_stripped = line.strip()
 
+        if self.game_mode == 'single':
+            self.handle_single_player_response(line_stripped)
+        else:
+            self.handle_multiplayer_response(line_stripped)
+
+    def handle_single_player_response(self, line_stripped: str):
+        """Handle single player responses."""
         # Check for error codes first
         if line_stripped == "E0":
             # Error: Button pressed too early
@@ -697,6 +1098,118 @@ class ReactionGameApp:
             self.master.after(3500, self.show_final_results)
         else:
             self.status_label.config(text="Great! Press START ROUND to continue", fg='#4D413D')
+
+    def handle_multiplayer_response(self, line_stripped: str):
+        """Handle multiplayer responses (AX, BX, AE0, BE1, etc.)."""
+        if not line_stripped:
+            return
+
+        # Ignore all inputs if not waiting for result (game ended due to error)
+        if not self.waiting_for_result:
+            return
+
+        # Check for player-specific error codes
+        if line_stripped.startswith('A') and line_stripped[1:] in ['E0', 'E1']:
+            # Player A error
+            error_type = "pressed the button too early" if line_stripped == "AE0" else "pressed the wrong color combination"
+            error_message = f"{self.player_a_name} {error_type}"
+            
+            # Show error immediately on canvas
+            self.player_a_canvas.itemconfig(self.player_a_time_text, text="ERROR", fill='#D93750')
+            self.player_b_canvas.itemconfig(self.player_b_time_text, text="WINS!", fill='#2CA7A7')
+            
+            # Stop listening for further inputs
+            self.waiting_for_result = False
+            
+            # Go to win screen after delay
+            self.master.after(2000, lambda: self.show_multiplayer_error_results('B', error_message))
+            return
+        
+        elif line_stripped.startswith('B') and line_stripped[1:] in ['E0', 'E1']:
+            # Player B error
+            error_type = "pressed the button too early" if line_stripped == "BE0" else "pressed the wrong color combination"
+            error_message = f"{self.player_b_name} {error_type}"
+            
+            # Show error immediately on canvas
+            self.player_a_canvas.itemconfig(self.player_a_time_text, text="WINS!", fill='#2CA7A7')
+            self.player_b_canvas.itemconfig(self.player_b_time_text, text="ERROR", fill='#D93750')
+            
+            # Stop listening for further inputs
+            self.waiting_for_result = False
+            
+            # Go to win screen after delay
+            self.master.after(2000, lambda: self.show_multiplayer_error_results('A', error_message))
+            return
+
+        # Check for player time responses (AX or BX where X is time)
+        if line_stripped.startswith('A'):
+            try:
+                delay_ms = int(line_stripped[1:])
+                self.player_a_times.append(delay_ms)
+                # Update Player A's display immediately
+                self.player_a_canvas.itemconfig(self.player_a_time_text, text=f"{delay_ms}ms", fill='#2CA7A7')
+                # Check if we have both players' times for this round
+                if len(self.player_a_times) == len(self.player_b_times):
+                    self.process_multiplayer_round()
+            except ValueError:
+                pass
+        elif line_stripped.startswith('B'):
+            try:
+                delay_ms = int(line_stripped[1:])
+                self.player_b_times.append(delay_ms)
+                # Update Player B's display immediately
+                self.player_b_canvas.itemconfig(self.player_b_time_text, text=f"{delay_ms}ms", fill='#D93750')
+                # Check if we have both players' times for this round
+                if len(self.player_a_times) == len(self.player_b_times):
+                    self.process_multiplayer_round()
+            except ValueError:
+                pass
+
+    def process_multiplayer_round(self):
+        """Process a completed multiplayer round."""
+        if not self.waiting_for_result:
+            return
+
+        self.waiting_for_result = False
+        self.start_round_button.config(state=tk.NORMAL)
+        self.current_round += 1
+
+        # Display both players' times (already shown in split view)
+        time_a = self.player_a_times[-1]
+        time_b = self.player_b_times[-1]
+        
+        # Highlight who was faster this round
+        if time_a < time_b:
+            self.player_a_canvas.itemconfig(self.player_a_time_text, fill='#2CA7A7')  # Winner color
+            self.player_b_canvas.itemconfig(self.player_b_time_text, fill='#4D413D')  # Normal color
+        elif time_b < time_a:
+            self.player_a_canvas.itemconfig(self.player_a_time_text, fill='#4D413D')  # Normal color
+            self.player_b_canvas.itemconfig(self.player_b_time_text, fill='#D93750')  # Winner color
+        else:
+            self.player_a_canvas.itemconfig(self.player_a_time_text, fill='#E4A853')  # Tie color
+            self.player_b_canvas.itemconfig(self.player_b_time_text, fill='#E4A853')  # Tie color
+        
+        self.progress_label.config(
+            text=f"Round {self.current_round} / {self.selected_rounds}"
+        )
+
+        if self.current_round >= self.selected_rounds:
+            # Game finished - show last round times first, then show winner after 3.5 seconds
+            self.status_label.config(text="Final Round complete!", fg='#2CA7A7')
+            self.start_round_button.config(state=tk.DISABLED)
+            
+            # Wait 3.5 seconds before showing final results
+            self.master.after(3500, self.show_final_multiplayer_results)
+        else:
+            self.status_label.config(text="Great! Press START ROUND to continue", fg='#4D413D')
+            # Reset displays for next round after a short delay
+            self.master.after(1500, self.reset_multiplayer_display)
+
+    def reset_multiplayer_display(self):
+        """Reset multiplayer time displays for next round."""
+        if self.current_round < self.selected_rounds:
+            self.player_a_canvas.itemconfig(self.player_a_time_text, text="Ready", fill='#4D413D')
+            self.player_b_canvas.itemconfig(self.player_b_time_text, text="Ready", fill='#4D413D')
 
     def update_leaderboard_ui(self):
         """Refresh the three leaderboard listboxes."""
